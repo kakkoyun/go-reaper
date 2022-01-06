@@ -6,17 +6,24 @@ package reaper
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 )
+
+type Logger interface {
+	Log(keyvals ...interface{}) error
+}
 
 type Config struct {
 	Pid              int
 	Options          int
 	DisablePid1Check bool
 	Debug            bool
+	Logger           Logger
 }
 
 // Handle death of child (SIGCHLD) messages. Pushes the signal onto the
@@ -45,6 +52,7 @@ func sigChildHandler(ctx context.Context, notifications chan os.Signal) {
 
 // Be a good parent - clean up behind the children.
 func reapChildren(ctx context.Context, config Config) error {
+	logger := config.Logger
 	var notifications = make(chan os.Signal, 1)
 
 	go sigChildHandler(ctx, notifications)
@@ -57,9 +65,7 @@ func reapChildren(ctx context.Context, config Config) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case sig := <-notifications:
-			if config.Debug {
-				fmt.Printf(" - Received signal %v\n", sig)
-			}
+			level.Debug(logger).Log("msg", "received signal", "signal", sig)
 		}
 
 		for {
@@ -77,11 +83,7 @@ func reapChildren(ctx context.Context, config Config) error {
 			if syscall.ECHILD == err {
 				break
 			}
-
-			if config.Debug {
-				fmt.Printf(" - Grim reaper cleanup: pid=%d, wstatus=%+v\n",
-					pid, wstatus)
-			}
+			level.Debug(logger).Log("msg", "clean up", "pid", pid, "wstatus", wstatus)
 		}
 	}
 } /*   End of function  reapChildren.  */
@@ -111,6 +113,22 @@ func Reap(ctx context.Context) error {
 // The config allows you to bypass the pid 1 checks, so handle with care.
 // The child processes are reaped in the background inside a goroutine.
 func Start(ctx context.Context, config Config) error {
+	if config.Logger == nil {
+		var (
+			logger log.Logger
+			lvl    level.Option
+		)
+		if config.Debug {
+			lvl = level.AllowDebug()
+		} else {
+			lvl = level.AllowInfo()
+		}
+		logger = log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
+		logger = level.NewFilter(logger, lvl)
+		logger = log.With(logger, "name", "grim-reaper")
+		config.Logger = log.With(logger, "ts", log.DefaultTimestampUTC, "caller", log.DefaultCaller)
+	}
+
 	/*
 	 *  Start the Reaper with configuration options. This allows you to
 	 *  reap processes even if the current pid isn't running as pid 1.
