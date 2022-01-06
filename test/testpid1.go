@@ -1,6 +1,9 @@
 package main
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+)
 import "fmt"
 import "os"
 import "os/signal"
@@ -9,7 +12,7 @@ import "path/filepath"
 import "syscall"
 import "time"
 
-import reaper "github.com/ramr/go-reaper"
+import "github.com/kakkoyun/go-reaper"
 
 const NWORKERS = 3
 const REAPER_JSON_CONFIG = "/reaper/config/reaper.json"
@@ -92,7 +95,7 @@ func start_reaper() {
 
 	/*  Start the grim reaper ... */
 	if useConfig {
-		go reaper.Start(config)
+		go reaper.Start(context.Background(), config)
 
 		/*  Run the sleeper test setting the process attributes.  */
 		go sleeper_test(true)
@@ -101,7 +104,7 @@ func start_reaper() {
 		go sleeper_test(false)
 
 	} else {
-		go reaper.Reap()
+		go reaper.Reap(context.Background())
 	}
 
 } /*  End of function start_reaper.  */
