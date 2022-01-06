@@ -3,10 +3,14 @@ package reaper
 /*  Note:  This is a *nix only implementation.  */
 
 //  Prefer #include style directives.
-import "fmt"
-import "os"
-import "os/signal"
-import "syscall"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+)
 
 type Config struct {
 	Pid              int
@@ -15,15 +19,17 @@ type Config struct {
 	Debug            bool
 }
 
-//  Handle death of child (SIGCHLD) messages. Pushes the signal onto the
-//  notifications channel if there is a waiter.
-func sigChildHandler(notifications chan os.Signal) {
+// Handle death of child (SIGCHLD) messages. Pushes the signal onto the
+// notifications channel if there is a waiter.
+func sigChildHandler(ctx context.Context, notifications chan os.Signal) {
 	var sigs = make(chan os.Signal, 3)
 	signal.Notify(sigs, syscall.SIGCHLD)
 
 	for {
 		var sig = <-sigs
 		select {
+		case <-ctx.Done():
+			return
 		case notifications <- sig: /*  published it.  */
 		default:
 			/*
@@ -37,20 +43,25 @@ func sigChildHandler(notifications chan os.Signal) {
 
 } /*  End of function  sigChildHandler.  */
 
-//  Be a good parent - clean up behind the children.
-func reapChildren(config Config) {
+// Be a good parent - clean up behind the children.
+func reapChildren(ctx context.Context, config Config) error {
 	var notifications = make(chan os.Signal, 1)
 
-	go sigChildHandler(notifications)
+	go sigChildHandler(ctx, notifications)
 
 	pid := config.Pid
 	opts := config.Options
 
 	for {
-		var sig = <-notifications
-		if config.Debug {
-			fmt.Printf(" - Received signal %v\n", sig)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case sig := <-notifications:
+			if config.Debug {
+				fmt.Printf(" - Received signal %v\n", sig)
+			}
 		}
+
 		for {
 			var wstatus syscall.WaitStatus
 
@@ -71,10 +82,8 @@ func reapChildren(config Config) {
 				fmt.Printf(" - Grim reaper cleanup: pid=%d, wstatus=%+v\n",
 					pid, wstatus)
 			}
-
 		}
 	}
-
 } /*   End of function  reapChildren.  */
 
 /*
@@ -83,26 +92,25 @@ func reapChildren(config Config) {
  *  ======================================================================
  */
 
-//  Normal entry point for the reaper code. Start reaping children in the
-//  background inside a goroutine.
-func Reap() {
+// Reap Normal entry point for the reaper code. Start reaping children in the
+// background inside a goroutine.
+func Reap(ctx context.Context) error {
 	/*
 	 *  Only reap processes if we are taking over init's duties aka
 	 *  we are running as pid 1 inside a docker container. The default
 	 *  is to reap all processes.
 	 */
-	Start(Config{
+	return Start(ctx, Config{
 		Pid:              -1,
 		Options:          0,
 		DisablePid1Check: false,
 	})
-
 } /*  End of [exported] function  Reap.  */
 
-//  Entry point for invoking the reaper code with a specific configuration.
-//  The config allows you to bypass the pid 1 checks, so handle with care.
-//  The child processes are reaped in the background inside a goroutine.
-func Start(config Config) {
+// Start Entry point for invoking the reaper code with a specific configuration.
+// The config allows you to bypass the pid 1 checks, so handle with care.
+// The child processes are reaped in the background inside a goroutine.
+func Start(ctx context.Context, config Config) error {
 	/*
 	 *  Start the Reaper with configuration options. This allows you to
 	 *  reap processes even if the current pid isn't running as pid 1.
@@ -114,10 +122,7 @@ func Start(config Config) {
 	if !config.DisablePid1Check {
 		mypid := os.Getpid()
 		if 1 != mypid {
-			if config.Debug {
-				fmt.Printf(" - Grim reaper disabled, pid not 1\n")
-			}
-			return
+			return errors.New("grim reaper disabled, pid not 1")
 		}
 	}
 
@@ -126,6 +131,5 @@ func Start(config Config) {
 	 *  of 'em all, either way we get to play the grim reaper.
 	 *  You will be missed, Terry Pratchett!! RIP
 	 */
-	go reapChildren(config)
-
+	return reapChildren(ctx, config)
 } /*  End of [exported] function  Start.  */
